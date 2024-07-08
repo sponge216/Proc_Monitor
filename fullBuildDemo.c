@@ -7,18 +7,12 @@
 #include <pthread.h>
 #include "structsAndGlobals.h"
 
-/*
-0 - all good.
-1 - error.
-2 - retry.
-
-make windows adjustable.
-*/
-int createGeneralMenu(char *[], int);
-int exitFunction();
-int filterMenu();
-int refreshRateMenu();
-int sortMenu();
+int createGeneralMenu(char *[], int, int *, int *);
+int exitFunction(int *, int *);
+int notificationsMenu(int *, int *);
+int filterMenu(int *offset, int *lineCount);
+int refreshRateMenu(int *offset, int *lineCount);
+int sortMenu(int *offset, int *lineCount);
 int sortProcesses(char *, char);
 int parseFilters(char *, char *);
 char *mallocAndCopyString(char *, int);
@@ -30,7 +24,7 @@ int freePsLinePtr(ps_line_ptr);
 int printLines(ps_line_ptr, WINDOW *, int, int, int);
 int freeAllLines(ps_line_ptr);
 int getLinesForProc(ps_line_ptr, int *);
-int addLinesToProc(WINDOW *, int, int, int *);
+int addLinesToProc(WINDOW *, int, int *, int *);
 void createProcWindow(void *);
 
 char outputCommand[MAX_COMMAND_SIZE] = DEFAULT_COMMAND;
@@ -46,13 +40,33 @@ WINDOW *createSubWindow(WINDOW *window, int height, int width, int startY, int s
     refresh();
     return win;
 }
-int exitFunction()
+int exitFunction(int *offset, int *lineCount)
 {
     return 0;
 }
 
+int notificationsMenu(int *offset, int *lineCount)
+{
+    char *choices[] = {"Enable", "Disable"};
+    int choicesSize = 2;
+    int choiceIndex = createGeneralMenu(choices, choicesSize, offset, lineCount);
+    if (choiceIndex == -1)
+        return 1;
+    if (choiceIndex == 1)
+    {
+        // enable
+    }
+    else if (choiceIndex == 2)
+    {
+        // disable
+    }
+    return 0;
+}
 char *mallocAndCopyString(char *src, int maxLen)
 {
+    if (src == NULL)
+        return NULL;
+
     int len = 0;
     while (len < maxLen && src[len])
     {
@@ -73,25 +87,27 @@ int parseFilters(char *input, char *awkCmd)
     awk_filter filters[MAX_FILTERS];
     int filterCount = 0;
 
-    char *inputCopy = mallocAndCopyString(input, BUFF_SIZE);
-    if (inputCopy == NULL)
+    if (input == NULL)
         return 1;
+
+    char *token = strtok(input, ",");
+    if (token == NULL) // check for errors.
+        return 1;
+
     char nameBuffer[NAME_BUFF_SIZE] = {0};
-    char *token = strtok(inputCopy, ",");
     char *choices[] = {"uname", "pid", "etime", "cpu", "mem", "comm"};
     int infoIndex = -1;
-    if (!token) // check for errors.
-        return 1;
+
     // Parse the input string into filters
     while (token != NULL && filterCount < MAX_FILTERS)
     {
         infoIndex = -1;
-        sscanf(token, "%[^:]:%[^:]:%d", nameBuffer, filters[filterCount].sign, &filters[filterCount].value);
+        sscanf(token, "%[^:]:%[^:]:%lf", nameBuffer, filters[filterCount].sign, &filters[filterCount].value);
         for (int j = 0; j < LINE_ARR_SIZE; j++) // info name
         {
             if (!strncmp(nameBuffer, choices[j], strlen(choices[j]))) // Check if the filter's name matches any of the existing names.
             {
-                infoIndex = j;
+                infoIndex = j + 1;
             }
         }
         if (infoIndex == -1)
@@ -100,8 +116,6 @@ int parseFilters(char *input, char *awkCmd)
         filterCount++;
         token = strtok(NULL, ","); // Get next token.
     }
-
-    free(inputCopy);
 
     // Construct the AWK command
     strcpy(awkCmd, "awk '");
@@ -112,7 +126,7 @@ int parseFilters(char *input, char *awkCmd)
             strcat(awkCmd, "&& ");
         }
         char filterCmd[100];
-        snprintf(filterCmd, sizeof(filterCmd), "$%d %s %d ", filters[i].infoIndex, filters[i].sign, filters[i].value);
+        snprintf(filterCmd, sizeof(filterCmd), "$%d %s %lf ", filters[i].infoIndex, filters[i].sign, filters[i].value);
         strcat(awkCmd, filterCmd);
     }
     strcat(awkCmd, AWK_PRINT);
@@ -123,7 +137,7 @@ int parseFilters(char *input, char *awkCmd)
     return 0;
 }
 
-int filterMenu()
+int filterMenu(int *offset, int *lineCount)
 {
     int scrnHeight;
     int scrnWidth;
@@ -142,9 +156,10 @@ int filterMenu()
     echo();
 
     res = mvwscanw(filterWin, 3, 1, "%s", buffer);
+    noecho();
+
     if (res == ERR) // Check if scanning user input was successful.
     {
-        noecho();
         werase(filterWin);
         delwin(filterWin);
         refresh();
@@ -152,38 +167,41 @@ int filterMenu()
     }
 
     res = parseFilters(buffer, awkCmd); // Check if parsing was successful
-    if (!res)
+    if (res)
     {
-        noecho();
         werase(filterWin);
         delwin(filterWin);
         refresh();
-
         return 1;
     }
 
+    snprintf(outputCommand, MAX_COMMAND_SIZE, "%s | %s", DEFAULT_PS_COMMAND, awkCmd);
+    mvwprintw(filterWin, 1, 1, "%s", outputCommand);
     wrefresh(filterWin);
-    sprintf(outputCommand, "%s | %s", DEFAULT_PS_COMMAND, awkCmd);
-    noecho();
     werase(filterWin);
     delwin(filterWin);
     refresh();
     return 0;
 }
 
-int refreshRateMenu()
+int refreshRateMenu(int *offset, int *lineCount)
 {
-    int scrnHeight;
-    int scrnWidth;
-    float refreshRateBuffer = 0;
+    int scrnHeight = 0;
+    int scrnWidth = 0;
     getmaxyx(stdscr, scrnHeight, scrnWidth);
     int height = scrnHeight / 5;
+
+    float refreshRateBuffer = 0;
+    int res = 0;
+
     WINDOW *refreshRateWin = createSubWindow(mainWindow, height, scrnWidth, 0, 0);
-    mvwprintw(refreshRateWin, 1, 1, "Enter refresh rate per minute, max 180");
     keypad(refreshRateWin, true);
-    wrefresh(refreshRateWin);
+
+    mvwprintw(refreshRateWin, 1, 1, "Enter refresh rate per minute");
     echo();
-    int res = mvwscanw(refreshRateWin, 3, 1, "%f", &refreshRateBuffer);
+    wrefresh(refreshRateWin);
+
+    res = mvwscanw(refreshRateWin, 3, 1, "%f", &refreshRateBuffer);
     if (res == ERR)
     {
         noecho();
@@ -192,8 +210,8 @@ int refreshRateMenu()
         refresh();
         return 1;
     }
-    refreshRate = refreshRateBuffer / 60;
-    wrefresh(refreshRateWin);
+
+    refreshRate = refreshRateBuffer;
 
     noecho();
     werase(refreshRateWin);
@@ -202,18 +220,18 @@ int refreshRateMenu()
     return 0;
 }
 
-int sortMenu()
+int sortMenu(int *offset, int *lineCount)
 { // TODO: add checks
     char *choices[8] = {"uname", "pid", "etime", "%cpu", "%mem", "comm", "+", "-"};
     int choicesSize = 8;
-    int info_index = createGeneralMenu(choices, choicesSize);
-    int sign_index = createGeneralMenu(choices, choicesSize);
+    int info_index = createGeneralMenu(choices, choicesSize, offset, lineCount);
+    int sign_index = createGeneralMenu(choices, choicesSize, offset, lineCount);
     int res = sortProcesses(choices[info_index], choices[sign_index][0]);
 
     return res;
 }
 
-int createGeneralMenu(char *choices[], int choicesSize)
+int createGeneralMenu(char *choices[], int choicesSize, int *offset, int *lineCount)
 {
     int scrnHeight;
     int scrnWidth;
@@ -245,6 +263,16 @@ int createGeneralMenu(char *choices[], int choicesSize)
             highlight += 1;
             break;
 
+        case KEY_UP:
+            if (*offset > 0)
+                (*offset)--;
+            break;
+
+        case KEY_DOWN:
+            if (*offset < *lineCount - height)
+                (*offset)++;
+            break;
+
         case KEY_RESIZE:
             getmaxyx(stdscr, scrnHeight, scrnWidth);
             height = scrnHeight / 5;
@@ -258,7 +286,7 @@ int createGeneralMenu(char *choices[], int choicesSize)
             break;
         }
         highlight %= choicesSize;
-        highlight = (highlight < 0) ? (highlight + choicesSize) : (highlight);
+        highlight = (highlight < 0) ? (highlight + choicesSize) : (highlight); // If the highlighted index is negative, change it to the end of choices.
 
         if (choice == 10) // check if enter is pressed
         {
@@ -284,6 +312,9 @@ procmon
 
 int printLines(ps_line_ptr line, WINDOW *win, int offset, int scrnWidth, int scrnHeight)
 {
+    if (line == NULL)
+        return 1;
+
     int currLine = 0;
     int lastLine = LINES_ON_SCREEN;
 
@@ -339,6 +370,9 @@ int freePsLinePtr(ps_line_ptr line)
 ps_line_ptr getNewPsLinePtr()
 { // TODO: check errors malloc
     ps_line_ptr line = (ps_line_ptr)malloc(sizeof(ps_line));
+    if (line == NULL)
+        return NULL;
+
     for (int i = 0; i < LINE_ARR_SIZE; i++)
     {
         line->info_arr[i] = NULL;
@@ -347,13 +381,14 @@ ps_line_ptr getNewPsLinePtr()
     return line;
 }
 
-int getLinesForProc(ps_line_ptr temp, int *lineCount)
+int getLinesForProc(ps_line_ptr line, int *lineCount)
 {
+    if (waitOnInput)
+        return 1;
 
     FILE *fp = popen(outputCommand, "r");
-    if (!fp)
+    if (fp == NULL)
     {
-        printf("ERROR, popen failed.");
         return 1;
     }
 
@@ -383,9 +418,9 @@ int getLinesForProc(ps_line_ptr temp, int *lineCount)
             }
             // dump the line's data into a line struct.
             // TODO: check errors malloc
-            temp->info_arr[currInfoIndex] = (char *)malloc(sizeof(char) * (len + 1));
-            strncpy(temp->info_arr[currInfoIndex], lineBuffer, len);
-            temp->info_arr[currInfoIndex][len] = '\0';
+            line->info_arr[currInfoIndex] = (char *)malloc(sizeof(char) * (len + 1));
+            strncpy(line->info_arr[currInfoIndex], lineBuffer, len);
+            line->info_arr[currInfoIndex][len] = '\0';
 
             len = 0;
             lineBuffIndex = 0;
@@ -394,8 +429,8 @@ int getLinesForProc(ps_line_ptr temp, int *lineCount)
             {
                 (*lineCount)++;
                 currInfoIndex = 0;
-                temp->next = getNewPsLinePtr();
-                temp = temp->next;
+                line->next = getNewPsLinePtr();
+                line = line->next;
                 break;
                 // TODO: fix it so if a line is bigger than BUFF_SIZE it wont break.
             }
@@ -408,7 +443,7 @@ int getLinesForProc(ps_line_ptr temp, int *lineCount)
     return 0;
 }
 
-int addLinesToProc(WINDOW *pw, int height, int offset, int *lineCount) // returns 1 if failed to add lines 0 if it worked
+int addLinesToProc(WINDOW *pw, int height, int *offset, int *lineCount)
 {
 
     // do lines
@@ -418,37 +453,58 @@ int addLinesToProc(WINDOW *pw, int height, int offset, int *lineCount) // return
     ps_line_ptr lines = getNewPsLinePtr();
     ps_line_ptr temp = lines;
 
-    getLinesForProc(temp, lineCount);
+    int res = getLinesForProc(temp, lineCount); // Get lines to print.
+    if (res)                                    // check for errors in getting the lines.
+    {
+        wrefresh(pw);
+        freeAllLines(lines); // Free all the allocated lines.
+        return 1;
+    }
 
     int scrnHeight, scrnWidth;
     getmaxyx(mainWindow, scrnHeight, scrnWidth);
-    char *infoNamesArr[] = {"UNAME", "PID", "ELAPSED TIME", "CPU", "MEM", "NAME"};
-    for (int i = 0; i < LINE_ARR_SIZE; i++)
+
+    char *infoNamesArr[] = {"USER", "PID", "ELAPSED TIME", "%CPU", "%MEM", "NAME"};
+    for (int i = 0; i < LINE_ARR_SIZE; i++) // Print the info names.
     {
         mvwprintw(pw, INIT_PRINT_Y - 1, i * (scrnWidth / LINE_ARR_SIZE) + 2, "%s\t", infoNamesArr[i]);
     }
-    printLines(lines->next, procWindow, offset, scrnWidth, scrnHeight);
 
-    freeAllLines(lines);
+    if (!strcmp(lines->info_arr[0], infoNamesArr[0])) // Check if the headers already exist in the lines.
+    {
+        temp = lines->next; // If they do, skip the first line.
+    }
+    else
+    {
+        temp = lines;
+    }
 
+    res = printLines(temp, pw, *offset, scrnWidth, scrnHeight); // Print the lines.
+    if (res)                                                    // Check if printing was successful.
+    {
+        wrefresh(pw);
+        freeAllLines(lines); // Free all the allocated lines.
+        return 1;
+    }
+
+    freeAllLines(lines); // Free all the allocated lines.
     wrefresh(pw);
     return 0;
 }
 
 void createProcWindow(void *data)
 {
-    pthread_data_ptr procData = (pthread_data_ptr)data;
+    thread_data_ptr procData = (thread_data_ptr)data;
     pthread_cond_t *inputCond = procData->inputCond;
     pthread_mutex_t *inputLock = procData->inputLock;
-    int *run = procData->run;
 
+    int *run = procData->run;
+    int *offset = procData->offset;
+    int *lineCount = procData->lineCount;
     int scrnHeight;
     int scrnWidth;
     getmaxyx(stdscr, scrnHeight, scrnWidth);
-
     int height = scrnHeight / 2;
-    int offset = 0;
-    int lineCount = 0;
     procWindow = createSubWindow(mainWindow, height, scrnWidth, scrnHeight / 2 - 2, 0);
 
     if (procWindow == NULL)
@@ -457,8 +513,6 @@ void createProcWindow(void *data)
         exit(EXIT_FAILURE);
     }
 
-    nodelay(procWindow, TRUE);
-    keypad(procWindow, TRUE);
     // proc window created
 
     struct timespec remaining, request;
@@ -467,39 +521,17 @@ void createProcWindow(void *data)
     // Separate into whole seconds and fractional seconds
     request.tv_sec = (time_t)interval_in_seconds;
     request.tv_nsec = (long)((interval_in_seconds - request.tv_sec) * 1e9);
-    while (*run && !addLinesToProc(procWindow, height, offset, &lineCount))
+    while (*run)
     {
-        int ch = wgetch(stdscr);
-        switch (ch)
-        {
-        case KEY_UP:
-            if (offset > 0)
-                offset--;
-            break;
-        case KEY_DOWN:
-            if (offset < lineCount - height)
-                offset++;
-            break;
-        }
-        ch = wgetch(stdscr);
-        if (ch == KEY_RESIZE)
-        {
-            werase(procWindow);
-            delwin(procWindow);
-            getmaxyx(mainWindow, scrnHeight, scrnWidth);
-            height = scrnHeight / 2;
-            procWindow = createSubWindow(mainWindow, height, scrnWidth, scrnHeight / 2, 0);
-            refresh();
-        }
         if (waitOnInput)
         {
-            pthread_mutex_lock(inputLock);
-            keypad(procWindow, FALSE);
-
-            pthread_cond_wait(inputCond, inputLock);
-
-            pthread_mutex_unlock(inputLock);
-            keypad(procWindow, TRUE);
+            pthread_mutex_lock(inputLock);           // Acquire lock.
+            pthread_cond_wait(inputCond, inputLock); // Wait for input to be finished.
+            pthread_mutex_unlock(inputLock);         // Unacquire lock.
+        }
+        if (addLinesToProc(procWindow, height, offset, lineCount))
+        {
+            continue;
         }
 
         nanosleep(&request, &remaining);
@@ -515,49 +547,48 @@ int main(int argc, char *argv[])
     if (mainWindow == NULL)
     {
         fprintf(stderr, "Failed to initialize curses...\n");
-        exit(EXIT_FAILURE);
+        exit(1);
     }
 
     noecho();
     start_color(); /* Start color 			*/
     init_pair(1, COLOR_RED, COLOR_BLACK);
-    nodelay(mainWindow, TRUE);
+
     waitOnInput = 0; // Used to time mainWindow and procWindow's inputs so they dont collide.
     refreshRate = DEFAULT_REFRESH_RATE;
     WINDOW *mainWindow, *procWindow;
     int index = 0;
     int res = 0;
-    int run = TRUE;
-    char *initialMenuChoices[] = {"RefreshRate", "Sort", "Filter", "Exit"};
-    int (*menuFunctionsArr[])() = {refreshRateMenu,
-                                   sortMenu,
-                                   filterMenu,
-                                   exitFunction};
-    pthread_cond_t inputCond = PTHREAD_COND_INITIALIZER;
+    int run = 1;
+    int offset = 0;
+    int lineCount = 0;
 
-    // declaring mutex
-    pthread_mutex_t inputLock = PTHREAD_MUTEX_INITIALIZER;
+    char *initialMenuChoices[] = {"RefreshRate", "Sort", "Filter", "Notifications", "Exit"};
+    int (*menuFunctionsArr[])(int *, int *) = {refreshRateMenu,
+                                               sortMenu,
+                                               filterMenu,
+                                               exitFunction};
+
     pthread_t procsThread;
-    pthread_data data = {&inputCond, &inputLock, &run};
+    pthread_cond_t inputCond = PTHREAD_COND_INITIALIZER;
+    pthread_mutex_t inputLock = PTHREAD_MUTEX_INITIALIZER;
+    thread_data data = {&inputCond, &inputLock, &run, &offset, &lineCount};
     pthread_create(&procsThread, NULL, (void *)createProcWindow, (void *)&data);
 
     while (run)
     {
-        index = createGeneralMenu(initialMenuChoices, INIT_CHOICES_SIZE);
-        if (index == -1) // if an error occured, retry.
-            continue;
+        index = createGeneralMenu(initialMenuChoices, INIT_CHOICES_SIZE, &offset, &lineCount);
+        if (index == -1 || index == INIT_CHOICES_SIZE - 1) // If an error occured or the user pressed Exit, close the program.
+            run = 0;
 
         waitOnInput = 1; // tell procwindow to wait.
 
-        res = menuFunctionsArr[index]();
+        res = menuFunctionsArr[index](&offset, &lineCount); // Commit the user's requested action.
 
-        waitOnInput = 0;                  // tell procwindow to continue.
         pthread_mutex_lock(&inputLock);   // acquire lock.
         pthread_cond_signal(&inputCond);  // signal procwindow to continue.
         pthread_mutex_unlock(&inputLock); // unacquire lock.
-
-        if (index == INIT_CHOICES_SIZE - 1) // If "Exit" was pressed, exit the program.
-            run = 0;
+        waitOnInput = 0;                  // tell procwindow to continue.
 
         refresh();
     }
